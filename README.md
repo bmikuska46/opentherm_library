@@ -1,6 +1,6 @@
-# OpenTherm library for Arduino, ESP8266, and ESP32
+# OpenThermPlus
 
-This library lets a microcontroller speak OpenTherm, the protocol that room thermostats use to control boilers. It follows the OpenTherm Protocol Specification v2.2, which this README calls the specification. You can use it to build:
+OpenThermPlus is an OpenTherm library for Arduino, ESP8266, and ESP32. It lets a microcontroller speak OpenTherm, the protocol that room thermostats use to control boilers. It follows the OpenTherm Protocol Specification v2.2, which this README calls the specification. You can use it to build:
 
 - A master, such as a thermostat that reads and sets boiler values.
 - A slave, such as a boiler simulator for testing a thermostat.
@@ -27,16 +27,14 @@ On an Arduino Uno, Nano, or Mini, only pins 2 and 3 support interrupts. On a Meg
 
 ## Install the library
 
-Arduino Library Manager and the PlatformIO registry install the original library by Ihor Melnyk, not this one. Install this one from Git. While the repository is private, Git needs your GitHub credentials to clone it.
-
-- **Arduino IDE.** Clone the repository into the `libraries` folder of your sketchbook, then restart the IDE. The default sketchbook folder is `~/Documents/Arduino` on macOS and Windows and `~/Arduino` on Linux.
+- **Arduino IDE.** Open **Sketch > Include Library > Manage Libraries**, search for `OpenThermPlus`, and click **Install**. With arduino-cli, run this command:
 	```sh
-	git clone https://github.com/bmikuska46/opentherm_library.git ~/Documents/Arduino/libraries/OpenTherm
+	arduino-cli lib install OpenThermPlus
 	```
-	If the original library is also installed, remove it. Both provide `OpenTherm.h`, and the IDE uses only one of them.
-- **PlatformIO.** Add the repository to `lib_deps` in `platformio.ini`.
+	If the original OpenTherm Library by Ihor Melnyk is also installed, remove it. Both provide `OpenTherm.h`, and the IDE uses only one of them.
+- **PlatformIO.** Add the library to `lib_deps` in `platformio.ini`.
 	```ini
-	lib_deps = https://github.com/bmikuska46/opentherm_library.git
+	lib_deps = https://github.com/bmikuska46/opentherm_library.git#2.0.0
 	```
 - **ESP-IDF with the Arduino component.** Clone the repository into the `components` folder of your project. Its `CMakeLists.txt` registers it as a component that requires `arduino`.
 
@@ -196,7 +194,7 @@ After `end()`, `sendRequestAsync()` and `sendResponse()` return `false` until yo
 
 ## Changes from the original library
 
-These changes can affect a sketch written for the original library:
+OpenThermPlus keeps the `OpenTherm` class and the `OpenTherm.h` header, so a sketch written for the original library compiles without changes. These changes can affect how it behaves:
 
 - `OpenThermResponseStatus` has a new value, `REJECTED`. A `DATA_INVALID` or `UNKNOWN_DATA_ID` answer used to be `INVALID`.
 - An answer with a different DATA-ID than its request is `INVALID`.

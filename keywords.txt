@@ -9,6 +9,7 @@
 OpenTherm	KEYWORD1
 OpenThermStatus	KEYWORD1
 OpenThermResponseStatus	KEYWORD1
+OpenThermMessageType	KEYWORD1
 OpenThermRequestType	KEYWORD1
 OpenThermMessageID	KEYWORD1
 
@@ -19,23 +20,43 @@ OpenThermMessageID	KEYWORD1
 begin	KEYWORD2
 isReady	KEYWORD2
 sendRequest	KEYWORD2
-sendRequestAync	KEYWORD2
+sendResponse	KEYWORD2
+sendRequestAsync	KEYWORD2
 buildRequest	KEYWORD2
+buildResponse	KEYWORD2
+getLastResponse	KEYWORD2
 getLastResponseStatus	KEYWORD2
+statusToString	KEYWORD2
 handleInterrupt	KEYWORD2
 process	KEYWORD2
 end	KEYWORD2
-doSomething	KEYWORD2
-
+parity	KEYWORD2
+getMessageType	KEYWORD2
+getDataID	KEYWORD2
+messageTypeToString	KEYWORD2
+isValidRequest	KEYWORD2
+isValidResponse	KEYWORD2
+buildSetBoilerStatusRequest	KEYWORD2
+buildSetBoilerTemperatureRequest	KEYWORD2
+buildGetBoilerTemperatureRequest	KEYWORD2
+isFault	KEYWORD2
+isCentralHeatingActive	KEYWORD2
+isHotWaterActive	KEYWORD2
+isFlameOn	KEYWORD2
+isCoolingActive	KEYWORD2
+isDiagnostic	KEYWORD2
+getUInt	KEYWORD2
+getFloat	KEYWORD2
+temperatureToData	KEYWORD2
 setBoilerStatus	KEYWORD2
 setBoilerTemperature	KEYWORD2
 getBoilerTemperature	KEYWORD2
-setDHWSetpoint			KEYWORD2
-getDHWTemperature		KEYWORD2
-
-#######################################
-# Instances (KEYWORD2)
-#######################################
+getReturnTemperature	KEYWORD2
+setDHWSetpoint	KEYWORD2
+getDHWTemperature	KEYWORD2
+getModulation	KEYWORD2
+getPressure	KEYWORD2
+getFault	KEYWORD2
 
 #######################################
 # Constants (LITERAL1)
