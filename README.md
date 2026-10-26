@@ -34,7 +34,7 @@ On an Arduino Uno, Nano, or Mini, only pins 2 and 3 support interrupts. On a Meg
 	If the original OpenTherm Library by Ihor Melnyk is also installed, remove it. Both provide `OpenTherm.h`, and the IDE uses only one of them.
 - **PlatformIO.** Add the library to `lib_deps` in `platformio.ini`.
 	```ini
-	lib_deps = https://github.com/bmikuska46/opentherm_library.git#2.0.0
+	lib_deps = bmikuska46/OpenThermPlus@^2.0.0
 	```
 - **ESP-IDF with the Arduino component.** Clone the repository into the `components` folder of your project. Its `CMakeLists.txt` registers it as a component that requires `arduino`.
 
