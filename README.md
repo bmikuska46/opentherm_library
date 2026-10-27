@@ -34,7 +34,7 @@ On an Arduino Uno, Nano, or Mini, only pins 2 and 3 support interrupts. On a Meg
 	If the original OpenTherm Library by Ihor Melnyk is also installed, remove it. Both provide `OpenTherm.h`, and the IDE uses only one of them.
 - **PlatformIO.** Add the library to `lib_deps` in `platformio.ini`.
 	```ini
-	lib_deps = bmikuska46/OpenThermPlus@^2.1.0
+	lib_deps = bmikuska46/OpenThermPlus@^2.2.0
 	```
 - **ESP-IDF with the Arduino component.** Clone the repository into the `components` folder of your project. Its `CMakeLists.txt` registers it as a component that requires `arduino`.
 
@@ -100,7 +100,7 @@ if (ot.getModulation(modulation))
 	Serial.println(modulation);
 ```
 
-`getFault(flags, oemCode)` works the same way and sets both bytes of the answer, the fault flags and the OEM fault code.
+`getFault(flags, oemCode)` works the same way and sets both bytes of the answer, the fault flags and the OEM fault code. `getMaxCapacity(maxCapacity, minModulation)` reads DATA-ID 15 the same way. It sets the maximum boiler capacity in kW and the minimum modulation level in %. Many boilers do not support DATA-ID 15.
 
 For any other DATA-ID, build the frame yourself and read the value from the answer:
 
@@ -154,6 +154,36 @@ void loop()
 
 On ESP8266 and ESP32, `begin()` also accepts a `std::function`, such as a lambda that captures state.
 
+## Estimate gas consumption
+
+OpenTherm has no DATA-ID for gas flow, so the library cannot read how much gas the boiler burns. `OpenThermGasEstimator` estimates it from the flame status and the relative modulation level that the boiler reports. Pass it a sample after each successful read:
+
+```cpp
+#include <OpenThermGasEstimator.h>
+
+OpenThermGasEstimator gas(24, 20, 10.55); // max power in kW, min modulation in %, kWh per m³
+
+void loop()
+{
+	unsigned long response = ot.setBoilerStatus(true, true);
+	float modulation;
+	if (OpenTherm::isValidResponse(response) && ot.getModulation(modulation))
+		gas.update(millis(), OpenTherm::isFlameOn(response), modulation);
+}
+```
+
+`getPower()` returns the power of the last sample in kW. `getEnergy()` returns the energy in kWh, and `getGas()` returns the gas in m³, both since the object was made. To keep a total across restarts, save the total yourself and add `getEnergy()` to it.
+
+The estimator needs three numbers:
+
+- `maxPower` is the rated heat input of the boiler in kW, from its data plate. Use the heat input, not the heat output, because the gas burned is the input. `getMaxCapacity()` can give an approximate value, but the specification does not say whether it is the input or the output.
+- `minModulation` is the lowest power of the burner, as a percentage of `maxPower`. The specification defines a modulation level of 0 % as the minimum modulation level and 100 % as the maximum, so with the flame on at 0 % the boiler still burns gas. `getMaxCapacity()` can give this value. Some boilers report the modulation level as a percentage of the maximum power instead. For those boilers, set `minModulation` to 0.
+- `kWhPerCubicMeter` is the calorific value of the gas, from the gas bill. It defaults to 10.55 kWh/m³, a typical value for natural gas.
+
+The estimator holds each sample until the next one. Between two samples, it counts the power of the first. It ignores a sample older than 1 minute, so a gap in the readings counts as no gas rather than as a guess. The more often you sample, the closer the estimate follows the burner. It adds energy as an integer, so long runs of small steps do not lose precision.
+
+The result is an estimate. The power of a real burner does not follow its modulation level exactly, and the rated heat input is a nominal value. To improve the estimate, compare `getGas()` with your gas meter over a few days and scale `maxPower` by the ratio.
+
 ## Build a slave or a gateway
 
 To act as a slave, pass `OpenThermRole::SLAVE` as the third argument of the constructor. A sketch written for the original library passes `true`, which also works. The library calls your function for each request, and the function answers with `sendResponse()`.
@@ -182,10 +212,11 @@ void loop()
 
 Return without an answer when the status is not `SUCCESS`. Section 4.5 of the specification says to reject a frame with errors and end the conversation. A request with `INVALID_DATA` is `SUCCESS`, because section 4.4.3 expects an answer to it. Call `sendResponse()` straight from the callback. It waits until 20 ms have passed since the end of the request and then sends.
 
-The `examples` folder has three sketches:
+The `examples` folder has four sketches:
 
 - `OpenThermMaster_Demo` sets the boiler status, the CH setpoint, and the hot water setpoint, reads the boiler and hot water temperatures, and prints the results.
 - `OpenThermSlave_Demo` answers the status, CH setpoint, and boiler temperature DATA-IDs, and answers `UNKNOWN_DATA_ID` to the rest. It answers an `INVALID_DATA` request with `DATA_INVALID`.
+- `OpenThermGasEstimate_Demo` keeps central heating and hot water on and prints the estimated power, energy, and gas every 10 s.
 - `OpenThermGatewayMonitor_Demo` uses a slave object that faces the thermostat and a master object that faces the boiler. It passes each valid request to the boiler and passes the boiler's `SUCCESS` and `REJECTED` answers back. It prints requests with a `T` prefix and answers with a `B` prefix at 9600 baud, the rate that the OpenTherm Monitor app supports.
 
 ## Timing rules
@@ -227,6 +258,7 @@ OpenThermPlus also adds names and overloads. The original names still work.
 - `setCHSetpoint()` and `buildSetCHSetpointRequest()`, the new names of `setBoilerTemperature()` and `buildSetBoilerTemperatureRequest()`.
 - Getters that take a variable, and `getFault(flags, oemCode)`.
 - `isCentralHeating2Active()` and `floatToData()`.
+- `getMaxCapacity()` and `OpenThermGasEstimator`.
 - `CumulativeElectricityProduction`, the correct spelling of `CumulativElectricityProduction`.
 
 ## Run the tests

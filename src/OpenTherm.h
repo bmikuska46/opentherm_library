@@ -248,6 +248,7 @@ public:
     bool getPressure(float &pressure);
     unsigned char getFault();
     bool getFault(unsigned char &flags, unsigned char &oemCode);
+    bool getMaxCapacity(unsigned char &maxCapacity, unsigned char &minModulation);
 
 private:
     const int inPin;

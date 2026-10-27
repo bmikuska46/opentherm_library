@@ -738,3 +738,13 @@ bool OpenTherm::getFault(unsigned char &flags, unsigned char &oemCode)
     oemCode = response & 0xff;
     return true;
 }
+
+bool OpenTherm::getMaxCapacity(unsigned char &maxCapacity, unsigned char &minModulation)
+{
+    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::MaxCapacityMinModLevel, 0));
+    if (!isValidResponse(response))
+        return false;
+    maxCapacity = (response >> 8) & 0xff;
+    minModulation = response & 0xff;
+    return true;
+}

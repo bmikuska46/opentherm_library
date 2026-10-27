@@ -1,4 +1,5 @@
 #include <OpenTherm.h>
+#include <OpenThermGasEstimator.h>
 
 #include <cmath>
 #include <cstdio>
@@ -830,6 +831,84 @@ void aCopyKeepsThePinsAndTheRole()
     EXPECT_EQ(link.master.sendRequest(REQUEST), RESPONSE, "a copy of the slave answers on the slave's pins");
 }
 
+void getMaxCapacityReadsBothBytes()
+{
+    Link link(answerFault);
+    unsigned char maxCapacity = 0;
+    unsigned char minModulation = 0;
+    EXPECT(link.master.getMaxCapacity(maxCapacity, minModulation), "getMaxCapacity() returns true on SUCCESS");
+    EXPECT_EQ(OpenTherm::getDataID(link.received), OpenThermMessageID::MaxCapacityMinModLevel, "after reading DATA-ID 15");
+    EXPECT_EQ(maxCapacity, 0x05, "the high byte holds the capacity in kW");
+    EXPECT_EQ(minModulation, 0x17, "the low byte holds the minimum modulation level");
+    fake::reset();
+    Link mute(silence);
+    maxCapacity = minModulation = 0x99;
+    EXPECT(!mute.master.getMaxCapacity(maxCapacity, minModulation), "a timeout returns false");
+    EXPECT_EQ(maxCapacity, 0x99, "and leaves the capacity unchanged");
+    EXPECT_EQ(minModulation, 0x99, "and the minimum modulation level");
+}
+
+bool near(float actual, float expected)
+{
+    return std::fabs(actual - expected) <= 1e-4f * std::fabs(expected) + 1e-6f;
+}
+
+void gasEstimatorMapsModulationBetweenMinAndMax()
+{
+    OpenThermGasEstimator gas(20, 25);
+    gas.update(0, true, 0);
+    EXPECT(near(gas.getPower(), 5), "0 % runs at the minimum modulation level");
+    gas.update(0, true, 50);
+    EXPECT(near(gas.getPower(), 12.5f), "50 % is halfway between the minimum and the maximum");
+    gas.update(0, true, 100);
+    EXPECT(near(gas.getPower(), 20), "100 % runs at the maximum");
+    gas.update(0, true, 150);
+    EXPECT(near(gas.getPower(), 20), "a level above 100 % counts as 100 %");
+    gas.update(0, true, NAN);
+    EXPECT(near(gas.getPower(), 5), "a NaN level counts as 0 %");
+    gas.update(0, false, 100);
+    EXPECT_EQ(gas.getPower(), 0.0f, "no flame burns no gas");
+}
+
+void gasEstimatorHoldsEachSampleUntilTheNext()
+{
+    OpenThermGasEstimator gas(24, 0, 10);
+    gas.update(0, true, 50);
+    EXPECT_EQ(gas.getEnergy(), 0.0f, "one sample has no duration yet");
+    gas.update(30000, false, 0);
+    EXPECT(near(gas.getEnergy(), 12 * 30 / 3600.0f), "the flame burned at 12 kW until the next sample");
+    gas.update(60000, true, 100);
+    EXPECT(near(gas.getEnergy(), 0.1f), "the time without flame adds nothing");
+    EXPECT(near(gas.getGas(), 0.01f), "gas is energy over the calorific value");
+}
+
+void gasEstimatorSkipsAGapLongerThanAMinute()
+{
+    OpenThermGasEstimator gas(36);
+    gas.update(0, true, 100);
+    gas.update(OpenThermGasEstimator::maxSampleAge, true, 100);
+    EXPECT(near(gas.getEnergy(), 0.6f), "a sample exactly a minute old still counts");
+    gas.update(2 * OpenThermGasEstimator::maxSampleAge + 1, true, 100);
+    EXPECT(near(gas.getEnergy(), 0.6f), "an older one does not");
+}
+
+void gasEstimatorSurvivesMillisWrapping()
+{
+    OpenThermGasEstimator gas(36);
+    gas.update(0xffffffff - 4999, true, 100);
+    gas.update(5000, true, 100);
+    EXPECT(near(gas.getEnergy(), 0.1f), "10 s across the wrap of millis() count once");
+}
+
+void gasEstimatorAddsSmallStepsWithoutRounding()
+{
+    OpenThermGasEstimator gas(24);
+    unsigned long now = 0;
+    for (int second = 0; second <= 100 * 3600; second++, now += 1000)
+        gas.update(now, true, 100);
+    EXPECT(near(gas.getEnergy(), 2400), "100 h of 1 s samples at 24 kW make 2400 kWh");
+}
+
 static_assert(OpenThermMessageID::CumulativeElectricityProduction == OpenThermMessageID::CumulativElectricityProduction, "both spellings name DATA-ID 112");
 
 struct Test
@@ -884,6 +963,12 @@ const Test tests[] = {
     {"begin() refuses a pin without an interrupt", beginRefusesAPinWithoutAnInterrupt},
     {"destroying a copy leaves the original running", destroyingACopyLeavesTheOriginalRunning},
     {"a copy keeps the pins and the role", aCopyKeepsThePinsAndTheRole},
+    {"getMaxCapacity() reads both bytes", getMaxCapacityReadsBothBytes},
+    {"gas estimator maps modulation between min and max", gasEstimatorMapsModulationBetweenMinAndMax},
+    {"gas estimator holds each sample until the next", gasEstimatorHoldsEachSampleUntilTheNext},
+    {"gas estimator skips a gap longer than a minute", gasEstimatorSkipsAGapLongerThanAMinute},
+    {"gas estimator survives millis() wrapping", gasEstimatorSurvivesMillisWrapping},
+    {"gas estimator adds small steps without rounding", gasEstimatorAddsSmallStepsWithoutRounding},
 };
 } // namespace
 

@@ -13,6 +13,7 @@ OpenThermMessageType	KEYWORD1
 OpenThermRequestType	KEYWORD1
 OpenThermMessageID	KEYWORD1
 OpenThermRole	KEYWORD1
+OpenThermGasEstimator	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
@@ -62,6 +63,11 @@ getDHWTemperature	KEYWORD2
 getModulation	KEYWORD2
 getPressure	KEYWORD2
 getFault	KEYWORD2
+getMaxCapacity	KEYWORD2
+update	KEYWORD2
+getPower	KEYWORD2
+getEnergy	KEYWORD2
+getGas	KEYWORD2
 
 #######################################
 # Constants (LITERAL1)
