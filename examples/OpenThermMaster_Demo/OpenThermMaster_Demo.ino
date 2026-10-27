@@ -36,7 +36,8 @@ void setup()
     Serial.begin(9600);
     Serial.println("Start");
 
-    ot.begin(handleInterrupt); // for ESP ot.begin(); without interrupt handler can be used
+    if (!ot.begin(handleInterrupt)) // for ESP ot.begin(); without interrupt handler can be used
+        Serial.println("Error: the input pin does not support interrupts");
 }
 
 void loop()
@@ -70,19 +71,21 @@ void loop()
         Serial.println("Error: Response timeout");
     }
 
-    // Set Boiler Temperature to 64 degrees C
-    ot.setBoilerTemperature(64);
+    // Set the CH water setpoint to 64 degrees C
+    ot.setCHSetpoint(64);
 
     // Get Boiler Temperature
-    float ch_temperature = ot.getBoilerTemperature();
-    Serial.println("CH temperature is " + String(ch_temperature) + " degrees C");
+    float ch_temperature;
+    if (ot.getBoilerTemperature(ch_temperature))
+        Serial.println("CH temperature is " + String(ch_temperature) + " degrees C");
 
     // Set DHW setpoint to 40 degrees C
     ot.setDHWSetpoint(40);
 
     // Get DHW Temperature
-    float dhw_temperature = ot.getDHWTemperature();
-    Serial.println("DHW temperature is " + String(dhw_temperature) + " degrees C");
+    float dhw_temperature;
+    if (ot.getDHWTemperature(dhw_temperature))
+        Serial.println("DHW temperature is " + String(dhw_temperature) + " degrees C");
 
     Serial.println();
 }

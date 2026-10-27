@@ -131,6 +131,7 @@ enum class OpenThermMessageID : byte
     ElectricityProducerHours                   = 110, // U16     Number of hours the electricity produces is in operation
     ElectricityProduction                      = 111, // U16     Current electricity production in Watt.
     CumulativElectricityProduction             = 112, // U16     Cumulative electricity production in KWh.
+    CumulativeElectricityProduction            = 112, // the correctly spelled name of CumulativElectricityProduction
     UnsuccessfulBurnerStarts                   = 113, // u16     Number of un - successful burner starts
     FlameSignalTooLowNumber                    = 114, // u16     Number of times flame signal was too low
     OEMDiagnosticCode                          = 115, // u16     OEM - specific diagnostic / service code
@@ -146,6 +147,12 @@ enum class OpenThermMessageID : byte
     OpenThermVersionSlave                      = 125, // f8.8    The implemented version of the OpenTherm Protocol Specification in the slave.
     MasterVersion                              = 126, // u8/u8     Master product version number and type
     SlaveVersion                               = 127, // u8/u8     Slave product version number and type
+};
+
+enum class OpenThermRole : byte
+{
+    MASTER,
+    SLAVE
 };
 
 enum class OpenThermStatus : byte
@@ -165,17 +172,20 @@ class OpenTherm
 {
 public:
     OpenTherm(int inPin = 4, int outPin = 5, bool isSlave = false);
+    OpenTherm(int inPin, int outPin, OpenThermRole role);
+    // A copy gets the pins and the role but not the running state, so destroying it cannot end() the original.
+    OpenTherm(const OpenTherm &other);
     ~OpenTherm();
     volatile OpenThermStatus status;
-    void begin(void (*handleInterruptCallback)(void));
-    void begin(void (*handleInterruptCallback)(void), void (*processResponseCallback)(unsigned long, OpenThermResponseStatus));
+    bool begin(void (*handleInterruptCallback)(void));
+    bool begin(void (*handleInterruptCallback)(void), void (*processResponseCallback)(unsigned long, OpenThermResponseStatus));
 #if !defined(__AVR__)
-    void begin();
-    void begin(std::function<void(unsigned long, OpenThermResponseStatus)> processResponseFunction);
+    bool begin();
+    bool begin(std::function<void(unsigned long, OpenThermResponseStatus)> processResponseFunction);
 #endif
     bool isReady();
     unsigned long sendRequest(unsigned long request);
-    bool sendResponse(unsigned long request);
+    bool sendResponse(unsigned long response);
     bool sendRequestAsync(unsigned long request);
     [[deprecated("Use OpenTherm::sendRequestAsync(unsigned long) instead")]]
     bool sendRequestAync(unsigned long request) {
@@ -202,7 +212,8 @@ public:
 
     // requests
     static unsigned long buildSetBoilerStatusRequest(bool enableCentralHeating, bool enableHotWater = false, bool enableCooling = false, bool enableOutsideTemperatureCompensation = false, bool enableCentralHeating2 = false);
-    static unsigned long buildSetBoilerTemperatureRequest(float temperature);
+    static unsigned long buildSetCHSetpointRequest(float temperature);
+    static unsigned long buildSetBoilerTemperatureRequest(float temperature); // the old name of buildSetCHSetpointRequest
     static unsigned long buildGetBoilerTemperatureRequest();
 
     // responses
@@ -211,21 +222,32 @@ public:
     static bool isHotWaterActive(unsigned long response);
     static bool isFlameOn(unsigned long response);
     static bool isCoolingActive(unsigned long response);
+    static bool isCentralHeating2Active(unsigned long response);
     static bool isDiagnostic(unsigned long response);
     static uint16_t getUInt(const unsigned long response);
     static float getFloat(const unsigned long response);
     static unsigned int temperatureToData(float temperature);
+    static unsigned int floatToData(float value);
 
     // basic requests
     unsigned long setBoilerStatus(bool enableCentralHeating, bool enableHotWater = false, bool enableCooling = false, bool enableOutsideTemperatureCompensation = false, bool enableCentralHeating2 = false);
-    bool setBoilerTemperature(float temperature);
-    float getBoilerTemperature();
-    float getReturnTemperature();
+    bool setCHSetpoint(float temperature);
+    bool setBoilerTemperature(float temperature); // the old name of setCHSetpoint
     bool setDHWSetpoint(float temperature);
+    // Each getter has a form that returns 0 when the conversation fails, and a form that
+    // returns false and leaves its argument unchanged.
+    float getBoilerTemperature();
+    bool getBoilerTemperature(float &temperature);
+    float getReturnTemperature();
+    bool getReturnTemperature(float &temperature);
     float getDHWTemperature();
+    bool getDHWTemperature(float &temperature);
     float getModulation();
+    bool getModulation(float &modulation);
     float getPressure();
+    bool getPressure(float &pressure);
     unsigned char getFault();
+    bool getFault(unsigned char &flags, unsigned char &oemCode);
 
 private:
     const int inPin;
@@ -246,6 +268,8 @@ private:
 
     void sendBit(bool high);
     void processResponse();
+    float readFloat(OpenThermMessageID id);
+    bool readFloat(OpenThermMessageID id, float &value);
     void (*processResponseCallback)(unsigned long, OpenThermResponseStatus);
 #if !defined(__AVR__)
     std::function<void(unsigned long, OpenThermResponseStatus)> processResponseFunction;

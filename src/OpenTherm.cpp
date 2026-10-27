@@ -4,6 +4,7 @@ Copyright 2023, Ihor Melnyk
 */
 
 #include "OpenTherm.h"
+#include <math.h>
 #if !defined(__AVR__)
 #include "FunctionalInterrupt.h"
 #endif
@@ -46,8 +47,27 @@ OpenTherm::OpenTherm(int inPin, int outPin, bool isSlave) :
 {
 }
 
-void OpenTherm::begin(void (*handleInterruptCallback)(void))
+OpenTherm::OpenTherm(int inPin, int outPin, OpenThermRole role) :
+    OpenTherm(inPin, outPin, role == OpenThermRole::SLAVE)
 {
+}
+
+OpenTherm::OpenTherm(const OpenTherm &other) :
+    OpenTherm(other.inPin, other.outPin, other.isSlave)
+{
+}
+
+bool OpenTherm::begin(void (*handleInterruptCallback)(void))
+{
+    // Without an interrupt on inPin no frame is ever received.
+#ifdef NOT_AN_INTERRUPT
+    if (digitalPinToInterrupt(inPin) == NOT_AN_INTERRUPT)
+        return false;
+#endif
+#if defined(__AVR__)
+    if (handleInterruptCallback == NULL)
+        return false;
+#endif
     pinMode(inPin, INPUT);
     pinMode(outPin, OUTPUT);
     if (handleInterruptCallback != NULL)
@@ -67,24 +87,29 @@ void OpenTherm::begin(void (*handleInterruptCallback)(void))
     }
     activateBoiler();
     status = OpenThermStatus::READY;
+    return true;
 }
 
-void OpenTherm::begin(void (*handleInterruptCallback)(void), void (*processResponseCallback)(unsigned long, OpenThermResponseStatus))
+bool OpenTherm::begin(void (*handleInterruptCallback)(void), void (*processResponseCallback)(unsigned long, OpenThermResponseStatus))
 {
-    begin(handleInterruptCallback);
+    if (!begin(handleInterruptCallback))
+        return false;
     this->processResponseCallback = processResponseCallback;
+    return true;
 }
 
 #if !defined(__AVR__)
-void OpenTherm::begin()
+bool OpenTherm::begin()
 {
-    begin(NULL);
+    return begin(NULL);
 }
 
-void OpenTherm::begin(std::function<void(unsigned long, OpenThermResponseStatus)> processResponseFunction)
+bool OpenTherm::begin(std::function<void(unsigned long, OpenThermResponseStatus)> processResponseFunction)
 {
-    begin();
+    if (!begin())
+        return false;
     this->processResponseFunction = processResponseFunction;
+    return true;
 }
 #endif
 
@@ -191,7 +216,7 @@ unsigned long OpenTherm::sendRequest(unsigned long request)
     return response;
 }
 
-bool OpenTherm::sendResponse(unsigned long request)
+bool OpenTherm::sendResponse(unsigned long response)
 {
     // The request callback runs in DELAY, so an answer sent from it waits for process() to end the delay.
     while (isSlave && status == OpenThermStatus::DELAY)
@@ -210,7 +235,7 @@ bool OpenTherm::sendResponse(unsigned long request)
     }
 
     status = OpenThermStatus::REQUEST_SENDING;
-    response = 0;
+    this->response = 0;
     responseStatus = OpenThermResponseStatus::NONE;
 
 #ifdef INC_FREERTOS_H
@@ -226,7 +251,7 @@ bool OpenTherm::sendResponse(unsigned long request)
     sendBit(HIGH); // start bit
     for (int i = 31; i >= 0; i--)
     {
-        sendBit(bitRead(request, i));
+        sendBit(bitRead(response, i));
     }
     sendBit(HIGH); // stop bit
     setIdleState();
@@ -410,7 +435,8 @@ OpenThermMessageID OpenTherm::getDataID(unsigned long frame)
 
 unsigned long OpenTherm::buildRequest(OpenThermMessageType type, OpenThermMessageID id, unsigned int data)
 {
-    unsigned long request = data;
+    // unsigned int has 32 bits on ESP boards, and higher bits would overwrite the DATA-ID and the message type.
+    unsigned long request = data & 0xFFFF;
     request |= ((unsigned long)type) << 28;
     request |= ((unsigned long)id) << 16;
     if (parity(request))
@@ -420,7 +446,7 @@ unsigned long OpenTherm::buildRequest(OpenThermMessageType type, OpenThermMessag
 
 unsigned long OpenTherm::buildResponse(OpenThermMessageType type, OpenThermMessageID id, unsigned int data)
 {
-    unsigned long response = data;
+    unsigned long response = data & 0xFFFF;
     response |= ((unsigned long)type) << 28;
     response |= ((unsigned long)id) << 16;
     if (parity(response))
@@ -449,6 +475,9 @@ void OpenTherm::end()
     if (status == OpenThermStatus::NOT_INITIALIZED)
         return;
     detachInterrupt(digitalPinToInterrupt(inPin));
+    // Only READY and DELAY come after process() has checked the frame, so in any other state the frame is not an answer yet.
+    if (status != OpenThermStatus::READY && status != OpenThermStatus::DELAY)
+        response = 0;
     if (!isSlave)
     {
         // Spec 3.5: an idle line with no valid frame for 5 s is a software short-circuit, which the boiler reads as heat demand.
@@ -515,10 +544,15 @@ unsigned long OpenTherm::buildSetBoilerStatusRequest(bool enableCentralHeating, 
     return buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Status, data);
 }
 
-unsigned long OpenTherm::buildSetBoilerTemperatureRequest(float temperature)
+unsigned long OpenTherm::buildSetCHSetpointRequest(float temperature)
 {
     unsigned int data = temperatureToData(temperature);
     return buildRequest(OpenThermMessageType::WRITE_DATA, OpenThermMessageID::TSet, data);
+}
+
+unsigned long OpenTherm::buildSetBoilerTemperatureRequest(float temperature)
+{
+    return buildSetCHSetpointRequest(temperature);
 }
 
 unsigned long OpenTherm::buildGetBoilerTemperatureRequest()
@@ -552,6 +586,11 @@ bool OpenTherm::isCoolingActive(unsigned long response)
     return response & 0x10;
 }
 
+bool OpenTherm::isCentralHeating2Active(unsigned long response)
+{
+    return response & 0x20;
+}
+
 bool OpenTherm::isDiagnostic(unsigned long response)
 {
     return response & 0x40;
@@ -580,6 +619,16 @@ unsigned int OpenTherm::temperatureToData(float temperature)
     return data;
 }
 
+unsigned int OpenTherm::floatToData(float value)
+{
+    if (value >= 0x7FFF / 256.0f)
+        return 0x7FFF;
+    // NaN fails every comparison, so a failed sensor read also becomes -128 instead of undefined behavior.
+    if (!(value > -128))
+        return 0x8000;
+    return (unsigned int)(lround(value * 256) & 0xFFFF);
+}
+
 // basic requests
 
 unsigned long OpenTherm::setBoilerStatus(bool enableCentralHeating, bool enableHotWater, bool enableCooling, bool enableOutsideTemperatureCompensation, bool enableCentralHeating2)
@@ -587,22 +636,15 @@ unsigned long OpenTherm::setBoilerStatus(bool enableCentralHeating, bool enableH
     return sendRequest(buildSetBoilerStatusRequest(enableCentralHeating, enableHotWater, enableCooling, enableOutsideTemperatureCompensation, enableCentralHeating2));
 }
 
-bool OpenTherm::setBoilerTemperature(float temperature)
+bool OpenTherm::setCHSetpoint(float temperature)
 {
-    unsigned long response = sendRequest(buildSetBoilerTemperatureRequest(temperature));
+    unsigned long response = sendRequest(buildSetCHSetpointRequest(temperature));
     return isValidResponse(response);
 }
 
-float OpenTherm::getBoilerTemperature()
+bool OpenTherm::setBoilerTemperature(float temperature)
 {
-    unsigned long response = sendRequest(buildGetBoilerTemperatureRequest());
-    return isValidResponse(response) ? getFloat(response) : 0;
-}
-
-float OpenTherm::getReturnTemperature()
-{
-    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::Tret, 0));
-    return isValidResponse(response) ? getFloat(response) : 0;
+    return setCHSetpoint(temperature);
 }
 
 bool OpenTherm::setDHWSetpoint(float temperature)
@@ -612,26 +654,87 @@ bool OpenTherm::setDHWSetpoint(float temperature)
     return isValidResponse(response);
 }
 
+bool OpenTherm::readFloat(OpenThermMessageID id, float &value)
+{
+    // The frame, not getLastResponseStatus(), because a request that could not start leaves the status of the previous one.
+    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, id, 0));
+    if (!isValidResponse(response))
+        return false;
+    value = getFloat(response);
+    return true;
+}
+
+float OpenTherm::readFloat(OpenThermMessageID id)
+{
+    float value = 0;
+    readFloat(id, value);
+    return value;
+}
+
+float OpenTherm::getBoilerTemperature()
+{
+    return readFloat(OpenThermMessageID::Tboiler);
+}
+
+bool OpenTherm::getBoilerTemperature(float &temperature)
+{
+    return readFloat(OpenThermMessageID::Tboiler, temperature);
+}
+
+float OpenTherm::getReturnTemperature()
+{
+    return readFloat(OpenThermMessageID::Tret);
+}
+
+bool OpenTherm::getReturnTemperature(float &temperature)
+{
+    return readFloat(OpenThermMessageID::Tret, temperature);
+}
+
 float OpenTherm::getDHWTemperature()
 {
-    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tdhw, 0));
-    return isValidResponse(response) ? getFloat(response) : 0;
+    return readFloat(OpenThermMessageID::Tdhw);
+}
+
+bool OpenTherm::getDHWTemperature(float &temperature)
+{
+    return readFloat(OpenThermMessageID::Tdhw, temperature);
 }
 
 float OpenTherm::getModulation()
 {
-    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::RelModLevel, 0));
-    return isValidResponse(response) ? getFloat(response) : 0;
+    return readFloat(OpenThermMessageID::RelModLevel);
+}
+
+bool OpenTherm::getModulation(float &modulation)
+{
+    return readFloat(OpenThermMessageID::RelModLevel, modulation);
 }
 
 float OpenTherm::getPressure()
 {
-    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::CHPressure, 0));
-    return isValidResponse(response) ? getFloat(response) : 0;
+    return readFloat(OpenThermMessageID::CHPressure);
+}
+
+bool OpenTherm::getPressure(float &pressure)
+{
+    return readFloat(OpenThermMessageID::CHPressure, pressure);
 }
 
 unsigned char OpenTherm::getFault()
 {
-    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::ASFflags, 0));
-    return isValidResponse(response) ? ((response >> 8) & 0xff) : 0;
+    unsigned char flags = 0;
+    unsigned char oemCode = 0;
+    getFault(flags, oemCode);
+    return flags;
+}
+
+bool OpenTherm::getFault(unsigned char &flags, unsigned char &oemCode)
+{
+    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::ASFflags, 0));
+    if (!isValidResponse(response))
+        return false;
+    flags = (response >> 8) & 0xff;
+    oemCode = response & 0xff;
+    return true;
 }

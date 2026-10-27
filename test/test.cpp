@@ -1,5 +1,6 @@
 #include <OpenTherm.h>
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -16,6 +17,8 @@ std::string show(unsigned long value)
     return text;
 }
 std::string show(OpenThermResponseStatus status) { return OpenTherm::statusToString(status); }
+std::string show(OpenThermMessageType type) { return OpenTherm::messageTypeToString(type); }
+std::string show(OpenThermMessageID id) { return std::to_string(static_cast<int>(id)); }
 
 void expect(bool ok, const char *message, int line)
 {
@@ -119,11 +122,21 @@ unsigned long answerForTret(unsigned long)
     return OpenTherm::buildResponse(OpenThermMessageType::READ_ACK, OpenThermMessageID::Tret, 0x1234);
 }
 
+unsigned long answerZero(unsigned long request)
+{
+    return OpenTherm::buildResponse(OpenThermMessageType::READ_ACK, OpenTherm::getDataID(request), 0);
+}
+
+unsigned long answerFault(unsigned long request)
+{
+    return OpenTherm::buildResponse(OpenThermMessageType::READ_ACK, OpenTherm::getDataID(request), 0x0517);
+}
+
 // A master wired to a slave that answers either from its callback or from its loop once it is ready again.
 struct Link
 {
     OpenTherm master{MASTER_IN, MASTER_OUT};
-    OpenTherm slave{SLAVE_IN, SLAVE_OUT, true};
+    OpenTherm slave{SLAVE_IN, SLAVE_OUT, OpenThermRole::SLAVE};
     unsigned long (*respond)(unsigned long);
     bool fromCallback;
     unsigned long received = 0;
@@ -229,7 +242,7 @@ void slaveDecodesEachRequestOnItsOwn()
 // A master whose request went out and whose input line plays a scripted response.
 struct ScriptedMaster
 {
-    OpenTherm ot{MASTER_IN, MASTER_OUT};
+    OpenTherm ot{MASTER_IN, MASTER_OUT, OpenThermRole::MASTER};
     unsigned long sent;
 
     ScriptedMaster()
@@ -626,6 +639,199 @@ void endFromTheCallbackReturnsFromSendRequest()
     EXPECT_EQ(link.master.sendRequest(REQUEST), RESPONSE, "sendRequest() returns the answer that arrived before end()");
 }
 
+void endBeforeProcessDiscardsTheFrame()
+{
+    const unsigned long otherId = OpenTherm::buildResponse(OpenThermMessageType::READ_ACK, OpenThermMessageID::Tret, 0x1234);
+    for (unsigned long frame : {RESPONSE, otherId})
+    {
+        fake::reset();
+        OpenTherm master(MASTER_IN, MASTER_OUT);
+        master.begin();
+        bool ended = false;
+        fake::onYield = [&master, &ended, frame] {
+            if (ended)
+                return;
+            ended = true;
+            scheduleHalfBits(MASTER_IN, fake::now + 1000, halfBits(frame));
+            fake::advance(40000);
+            master.end();
+        };
+        float temperature = -1;
+        EXPECT(!master.getBoilerTemperature(temperature), "a getter returns false when end() runs before process() checks the answer");
+        EXPECT_EQ(temperature, -1.0f, "and leaves the argument unchanged");
+        EXPECT_EQ(master.getLastResponse(), 0ul, "and the frame is discarded");
+        EXPECT_EQ(master.getLastResponseStatus(), OpenThermResponseStatus::NONE, "and the status stays NONE");
+    }
+}
+
+void builtFramesKeepDataInItsField()
+{
+    for (unsigned long frame : {OpenTherm::buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tboiler, 0x22345),
+                                OpenTherm::buildResponse(OpenThermMessageType::READ_ACK, OpenThermMessageID::Tboiler, 0x22345)})
+    {
+        EXPECT_EQ(OpenTherm::getDataID(frame), OpenThermMessageID::Tboiler, "data above 16 bits does not change the DATA-ID");
+        EXPECT_EQ(OpenTherm::getUInt(frame), 0x2345, "and is cut to 16 bits");
+    }
+    EXPECT_EQ(OpenTherm::getMessageType(OpenTherm::buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Tboiler, 0x10000000)), OpenThermMessageType::READ_DATA, "nor the message type");
+}
+
+void floatToDataEncodesSignedValues()
+{
+    EXPECT_EQ(OpenTherm::floatToData(-5.25f), 0xFAC0, "-5.25 is 0xFAC0");
+    EXPECT_EQ(OpenTherm::floatToData(21.3f), 0x154D, "21.3 rounds to the nearest 1/256");
+    EXPECT_EQ(OpenTherm::floatToData(-21.3f), 0xEAB3, "and so does -21.3");
+    EXPECT_EQ(OpenTherm::floatToData(1.0f / 512), 0x0001, "half of 1/256 rounds away from 0");
+    EXPECT_EQ(OpenTherm::floatToData(-1.0f / 512), 0xFFFF, "on both sides");
+    EXPECT_EQ(OpenTherm::floatToData(std::nextafter(1.0f / 512, 0.0f)), 0x0000, "just under half rounds to 0");
+    EXPECT_EQ(OpenTherm::floatToData(std::nextafter(-1.0f / 512, 0.0f)), 0x0000, "on both sides");
+    for (float value : {-128.0f, -40.5f, -0.5f, 0.0f, 64.0f, 127.99609375f})
+        EXPECT_EQ(OpenTherm::getFloat(OpenTherm::floatToData(value)), value, "getFloat() decodes what floatToData() encodes");
+    EXPECT_EQ(OpenTherm::floatToData(-200), 0x8000, "values below -128 encode as -128");
+    EXPECT_EQ(OpenTherm::floatToData(200), 0x7FFF, "values above 127.996 encode as 127.996");
+    EXPECT_EQ(OpenTherm::floatToData(NAN), 0x8000, "NaN encodes as -128");
+}
+
+void statusHelpersReadTheirOwnBits()
+{
+    bool (*const helpers[])(unsigned long) = {
+        OpenTherm::isFault,
+        OpenTherm::isCentralHeatingActive,
+        OpenTherm::isHotWaterActive,
+        OpenTherm::isFlameOn,
+        OpenTherm::isCoolingActive,
+        OpenTherm::isCentralHeating2Active,
+        OpenTherm::isDiagnostic,
+    };
+    for (int helper = 0; helper < 7; helper++)
+        for (int bit = 0; bit < 8; bit++)
+            EXPECT_EQ(helpers[helper](1ul << bit), bit == helper, "each slave status helper reads only its bit");
+}
+
+void checkedGettersTellAZeroFromAFailure()
+{
+    struct Getter
+    {
+        bool (OpenTherm::*read)(float &);
+        OpenThermMessageID id;
+    };
+    const Getter getters[] = {
+        {&OpenTherm::getBoilerTemperature, OpenThermMessageID::Tboiler},
+        {&OpenTherm::getReturnTemperature, OpenThermMessageID::Tret},
+        {&OpenTherm::getDHWTemperature, OpenThermMessageID::Tdhw},
+        {&OpenTherm::getModulation, OpenThermMessageID::RelModLevel},
+        {&OpenTherm::getPressure, OpenThermMessageID::CHPressure},
+    };
+    for (const Getter &getter : getters)
+    {
+        fake::reset();
+        Link link(answer);
+        float value = -1;
+        EXPECT((link.master.*getter.read)(value), "a getter returns true on SUCCESS");
+        EXPECT_EQ(OpenTherm::getDataID(link.received), getter.id, "after reading its DATA-ID");
+        EXPECT_EQ(value, 0x1234 / 256.0f, "and stores the f8.8 value");
+
+        fake::reset();
+        Link zero(answerZero);
+        value = -1;
+        EXPECT((zero.master.*getter.read)(value), "a real 0 is a success");
+        EXPECT_EQ(value, 0.0f, "and is stored");
+
+        fake::reset();
+        Link mute(silence);
+        value = -1;
+        EXPECT(!(mute.master.*getter.read)(value), "a timeout returns false");
+        EXPECT_EQ(value, -1.0f, "and leaves the argument unchanged");
+    }
+}
+
+void getFaultReturnsTheFlagsAndTheOemCode()
+{
+    Link link(answerFault);
+    unsigned char flags = 0;
+    unsigned char oemCode = 0;
+    EXPECT(link.master.getFault(flags, oemCode), "getFault() returns true on SUCCESS");
+    EXPECT_EQ(OpenTherm::getDataID(link.received), OpenThermMessageID::ASFflags, "after reading ASFflags");
+    EXPECT_EQ(flags, 0x05, "the high byte holds the flags");
+    EXPECT_EQ(oemCode, 0x17, "the low byte holds the OEM fault code");
+    EXPECT_EQ(link.master.getFault(), 0x05, "the old form returns the flags");
+    fake::reset();
+    Link bad(faultWithBadParity);
+    flags = oemCode = 0x99;
+    EXPECT(!bad.master.getFault(flags, oemCode), "a frame with bad parity returns false");
+    EXPECT_EQ(flags, 0x99, "and leaves the flags unchanged");
+    EXPECT_EQ(oemCode, 0x99, "and the OEM code");
+}
+
+void setCHSetpointWritesTSet()
+{
+    Link link(answer);
+    EXPECT(link.master.setCHSetpoint(64), "setCHSetpoint() returns true when acknowledged");
+    EXPECT_EQ(link.received, OpenTherm::buildRequest(OpenThermMessageType::WRITE_DATA, OpenThermMessageID::TSet, 0x4000), "and writes TSet");
+    EXPECT(link.master.setBoilerTemperature(40), "setBoilerTemperature() still works");
+    EXPECT_EQ(link.received, OpenTherm::buildRequest(OpenThermMessageType::WRITE_DATA, OpenThermMessageID::TSet, 0x2800), "and writes the same DATA-ID");
+}
+
+void checkedGettersFailWhenTheRequestCannotStart()
+{
+    Link link(answer);
+    EXPECT_EQ(link.master.sendRequest(REQUEST), RESPONSE, "the first conversation succeeds");
+    link.master.end();
+    EXPECT_EQ(link.master.sendRequest(REQUEST), 0ul, "an ended master returns 0");
+    EXPECT_EQ(link.master.getLastResponseStatus(), OpenThermResponseStatus::SUCCESS, "and the status still describes the first conversation");
+    float temperature = -1;
+    EXPECT(!link.master.getBoilerTemperature(temperature), "a checked getter returns false");
+    EXPECT_EQ(temperature, -1.0f, "and leaves the argument unchanged");
+    unsigned char flags = 0x99;
+    unsigned char oemCode = 0x99;
+    EXPECT(!link.master.getFault(flags, oemCode), "and so does getFault()");
+}
+
+void aRefusedRequestInTheCallbackKeepsTheOuterResult()
+{
+    Link link(answer);
+    link.master.begin([&link](unsigned long, OpenThermResponseStatus) { link.master.sendRequest(REQUEST); });
+    float temperature = -1;
+    EXPECT(link.master.getBoilerTemperature(temperature), "a getter succeeds although its callback tried a request");
+    EXPECT_EQ(temperature, 0x1234 / 256.0f, "and stores the answer");
+    EXPECT_EQ(link.master.getLastResponseStatus(), OpenThermResponseStatus::SUCCESS, "and the status stays SUCCESS");
+}
+
+void beginRefusesAPinWithoutAnInterrupt()
+{
+    OpenTherm master(16, MASTER_OUT);
+    EXPECT(!master.begin(), "begin() returns false when the input pin has no interrupt");
+    EXPECT_EQ(writesTo(MASTER_OUT), 0u, "without touching the line");
+    EXPECT(!master.sendRequestAsync(REQUEST), "and the master refuses to send");
+    OpenTherm working(MASTER_IN, MASTER_OUT);
+    EXPECT(working.begin(), "begin() returns true on an interrupt pin");
+}
+
+void destroyingACopyLeavesTheOriginalRunning()
+{
+    Link link(answer);
+    {
+        OpenTherm copy = link.master;
+        EXPECT(!copy.sendRequestAsync(REQUEST), "a copy has not begun");
+    }
+    EXPECT_EQ(link.master.sendRequest(REQUEST), RESPONSE, "the original still receives after the copy is destroyed");
+    EXPECT_EQ(digitalRead(MASTER_OUT), HIGH, "and its line is idle");
+}
+
+void aCopyKeepsThePinsAndTheRole()
+{
+    Link link(answer);
+    link.slave.end();
+    OpenTherm copy = link.slave;
+    copy.begin([&copy](unsigned long request, OpenThermResponseStatus status) {
+        if (status == OpenThermResponseStatus::SUCCESS)
+            copy.sendResponse(answer(request));
+    });
+    fake::onYield = [&copy] { copy.process(); };
+    EXPECT_EQ(link.master.sendRequest(REQUEST), RESPONSE, "a copy of the slave answers on the slave's pins");
+}
+
+static_assert(OpenThermMessageID::CumulativeElectricityProduction == OpenThermMessageID::CumulativElectricityProduction, "both spellings name DATA-ID 112");
+
 struct Test
 {
     const char *name;
@@ -666,6 +872,18 @@ const Test tests[] = {
     {"end() only acts on a running object", endOnlyActsOnARunningObject},
     {"begin() after end() works", beginAfterEndWorks},
     {"end() from the callback returns from sendRequest()", endFromTheCallbackReturnsFromSendRequest},
+    {"end() before process() discards the frame", endBeforeProcessDiscardsTheFrame},
+    {"built frames keep data in its field", builtFramesKeepDataInItsField},
+    {"floatToData() encodes signed values", floatToDataEncodesSignedValues},
+    {"status helpers read their own bits", statusHelpersReadTheirOwnBits},
+    {"checked getters tell a 0 from a failure", checkedGettersTellAZeroFromAFailure},
+    {"getFault() returns the flags and the OEM code", getFaultReturnsTheFlagsAndTheOemCode},
+    {"setCHSetpoint() writes TSet", setCHSetpointWritesTSet},
+    {"checked getters fail when the request cannot start", checkedGettersFailWhenTheRequestCannotStart},
+    {"a refused request in the callback keeps the outer result", aRefusedRequestInTheCallbackKeepsTheOuterResult},
+    {"begin() refuses a pin without an interrupt", beginRefusesAPinWithoutAnInterrupt},
+    {"destroying a copy leaves the original running", destroyingACopyLeavesTheOriginalRunning},
+    {"a copy keeps the pins and the role", aCopyKeepsThePinsAndTheRole},
 };
 } // namespace
 

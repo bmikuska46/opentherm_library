@@ -34,13 +34,13 @@ On an Arduino Uno, Nano, or Mini, only pins 2 and 3 support interrupts. On a Meg
 	If the original OpenTherm Library by Ihor Melnyk is also installed, remove it. Both provide `OpenTherm.h`, and the IDE uses only one of them.
 - **PlatformIO.** Add the library to `lib_deps` in `platformio.ini`.
 	```ini
-	lib_deps = bmikuska46/OpenThermPlus@^2.0.0
+	lib_deps = bmikuska46/OpenThermPlus@^2.1.0
 	```
 - **ESP-IDF with the Arduino component.** Clone the repository into the `components` folder of your project. Its `CMakeLists.txt` registers it as a component that requires `arduino`.
 
 ## Talk to a boiler
 
-This sketch turns on central heating and hot water, sets the boiler water to 64 °C, and prints whether the flame is on.
+This sketch turns on central heating and hot water, sets the CH water setpoint to 64 °C, and prints whether the flame is on.
 
 ```cpp
 #include <Arduino.h>
@@ -70,11 +70,11 @@ void loop()
 	else
 		Serial.println(OpenTherm::statusToString(status));
 
-	ot.setBoilerTemperature(64);
+	ot.setCHSetpoint(64);
 }
 ```
 
-`IRAM_ATTR` keeps the handler in RAM on ESP8266 and ESP32. The library defines it as empty on other boards. On ESP8266 and ESP32, you can call `ot.begin()` with no handler, and the library attaches its own. `begin()` sets the line idle and waits 1 s before it returns.
+`IRAM_ATTR` keeps the handler in RAM on ESP8266 and ESP32. The library defines it as empty on other boards. On ESP8266 and ESP32, you can call `ot.begin()` with no handler, and the library attaches its own. `begin()` sets the line idle, waits 1 s, and returns `true`. It returns `false` at once if the board reports that the input pin has no interrupt, or on AVR boards if the handler is `NULL`.
 
 Each call in `loop()` blocks until the conversation ends. With an answer, that is 100 ms after the answer, the pause that the specification requires between conversations. Without one, it takes about 1 s. The loop has no `delay()` on purpose. The specification requires the master to communicate at least once per second, with a 15% tolerance, and a `delay(1000)` between requests makes the gap longer than that.
 
@@ -82,8 +82,8 @@ These calls each send one request and wait for the answer:
 
 | Method | Returns |
 | --- | --- |
-| `setBoilerStatus(enableCentralHeating, enableHotWater, ...)` | The boiler's status frame. Read it with `isFault()`, `isCentralHeatingActive()`, `isHotWaterActive()`, `isFlameOn()`, `isCoolingActive()`, and `isDiagnostic()`. |
-| `setBoilerTemperature(temperature)` | `true` if the boiler accepted the CH water setpoint. |
+| `setBoilerStatus(enableCentralHeating, enableHotWater, ...)` | The boiler's status frame. Read it with `isFault()`, `isCentralHeatingActive()`, `isHotWaterActive()`, `isFlameOn()`, `isCoolingActive()`, `isCentralHeating2Active()`, and `isDiagnostic()`. |
+| `setCHSetpoint(temperature)` | `true` if the boiler accepted the CH water setpoint. The original name, `setBoilerTemperature()`, also works. |
 | `setDHWSetpoint(temperature)` | `true` if the boiler accepted the hot water setpoint. |
 | `getBoilerTemperature()` | The CH flow water temperature in °C. |
 | `getReturnTemperature()` | The return water temperature in °C. |
@@ -92,18 +92,26 @@ These calls each send one request and wait for the answer:
 | `getPressure()` | The CH water pressure in bar. |
 | `getFault()` | The application-specific fault flags. |
 
-The getters return 0 when the conversation fails. To tell a real 0 from a failure, check `getLastResponseStatus()`.
+The getters return 0 when the conversation fails. A modulation level, a pressure, or the fault flags can also be a real 0. To tell the two apart, pass a variable to the getter. It returns `true` and sets the variable if the conversation succeeds. Otherwise it returns `false` and leaves the variable unchanged.
+
+```cpp
+float modulation;
+if (ot.getModulation(modulation))
+	Serial.println(modulation);
+```
+
+`getFault(flags, oemCode)` works the same way and sets both bytes of the answer, the fault flags and the OEM fault code.
 
 For any other DATA-ID, build the frame yourself and read the value from the answer:
 
 ```cpp
 unsigned long request = OpenTherm::buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Toutside, 0);
 unsigned long response = ot.sendRequest(request);
-if (ot.getLastResponseStatus() == OpenThermResponseStatus::SUCCESS)
+if (OpenTherm::isValidResponse(response))
 	Serial.println(OpenTherm::getFloat(response));
 ```
 
-`getUInt()` returns the 16-bit data value, and `getFloat()` decodes it as the specification's f8.8 format. `temperatureToData()` encodes a temperature for a `WRITE_DATA` request and limits it to the range 0 to 100 °C.
+`getUInt()` returns the 16-bit data value, and `getFloat()` decodes it as the specification's f8.8 format. `temperatureToData()` encodes a temperature for a `WRITE_DATA` request and limits it to the range 0 to 100 °C. `floatToData()` encodes any f8.8 value, including a negative one such as an outside temperature, and limits it to the range -128 to 127.996. It encodes NaN, which a failed sensor read often returns, as -128.
 
 ## Check the result of a conversation
 
@@ -117,11 +125,13 @@ if (ot.getLastResponseStatus() == OpenThermResponseStatus::SUCCESS)
 | `TIMEOUT` | No complete frame arrived within 1 s of the end of the request. |
 | `NONE` | No conversation has finished yet, or the current one is still running. |
 
-On a master, a frame that would pass `isValidResponse()` reaches your code only with `SUCCESS`. With any other status, `sendRequest()`, `getLastResponse()`, and the callback get 0 in its place. Other frames keep their bits for diagnostics, so check the status instead of comparing the frame with 0.
+On a master, a frame that would pass `isValidResponse()` reaches your code only with `SUCCESS`. With any other status, `sendRequest()`, the callback, and `getLastResponse()` after the conversation get 0 in its place. Other frames keep their bits for diagnostics, so do not compare the frame with 0. `OpenTherm::isValidResponse(response)` is `true` when the conversation that returned `response` succeeded, and `false` otherwise. While a conversation runs, `getLastResponse()` returns the bits received so far.
+
+`sendRequest()` returns 0 and leaves the status as it was when it cannot start a conversation. That happens before `begin()`, after `end()`, and inside the callback, where the conversation that called the callback has not ended yet. `getLastResponseStatus()` then still returns the status of the previous conversation, so check the frame with `isValidResponse()` instead.
 
 ## Send requests without blocking
 
-`sendRequestAsync()` sends a request and returns at once. It returns `false` and sends nothing until the previous conversation ends. Call `process()` from `loop()`. When a conversation ends, `process()` calls the function that you passed to `begin()`, with the answer and its status.
+`sendRequestAsync()` sends the request, which takes about 34 ms, and returns without waiting for the answer. It returns `false` and sends nothing until the previous conversation ends. Call `process()` from `loop()`. When a conversation ends, `process()` calls the function that you passed to `begin()`, with the answer and its status.
 
 ```cpp
 void processResponse(unsigned long response, OpenThermResponseStatus status)
@@ -146,10 +156,10 @@ On ESP8266 and ESP32, `begin()` also accepts a `std::function`, such as a lambda
 
 ## Build a slave or a gateway
 
-To act as a slave, pass `true` as the third argument of the constructor. The library calls your function for each request, and the function answers with `sendResponse()`.
+To act as a slave, pass `OpenThermRole::SLAVE` as the third argument of the constructor. A sketch written for the original library passes `true`, which also works. The library calls your function for each request, and the function answers with `sendResponse()`.
 
 ```cpp
-OpenTherm ot(inPin, outPin, true);
+OpenTherm ot(inPin, outPin, OpenThermRole::SLAVE);
 
 void processRequest(unsigned long request, OpenThermResponseStatus status)
 {
@@ -190,21 +200,34 @@ The `examples` folder has three sketches:
 
 `end()` detaches the interrupt. On a master, it also drives the line active. Section 3.5 of the specification lets a boiler read a line that stays at its low voltage, with no valid frame for 5 s, as a short circuit. The boiler treats a short circuit as a heat demand, and the active line prevents that. On a slave, `end()` leaves the output as it is.
 
-After `end()`, `sendRequestAsync()` and `sendResponse()` return `false` until you call `begin()` again. `end()` does nothing if the object has not started or has already stopped. The destructor calls `end()`.
+If `end()` stops a conversation before `process()` has checked the answer, the library discards the answer. `sendRequest()` then returns 0, and the status stays `NONE`. After `end()`, `sendRequestAsync()` and `sendResponse()` return `false` until you call `begin()` again. `end()` does nothing if the object has not started or has already stopped. The destructor calls `end()`.
+
+A copy of an `OpenTherm` object, such as one passed to a function by value, has the same pins and role but has not started. Destroying the copy does not stop the original.
 
 ## Changes from the original library
 
-OpenThermPlus keeps the `OpenTherm` class and the `OpenTherm.h` header, so a sketch written for the original library compiles without changes. These changes can affect how it behaves:
+OpenThermPlus keeps the `OpenTherm` class and the `OpenTherm.h` header, so a sketch written for the original library compiles without changes. The one exception is a sketch that takes the address of `begin()`, or of a getter with `auto`, because these methods now have overloads and `begin()` returns `bool`. These changes can affect how it behaves:
 
 - `OpenThermResponseStatus` has a new value, `REJECTED`. A `DATA_INVALID` or `UNKNOWN_DATA_ID` answer used to be `INVALID`.
 - An answer with a different DATA-ID than its request is `INVALID`.
-- On a master, a frame that would pass `isValidResponse()` comes back as 0 unless the status is `SUCCESS`.
+- On a master, a frame that would pass `isValidResponse()` comes back as 0 unless the status is `SUCCESS`. This includes an answer that arrives just before `end()`, which `sendRequest()` returns as 0.
 - A frame with a stop bit of 0 or a missing mid-bit transition is `INVALID`. Spikes before a frame no longer make the conversation `INVALID`.
 - `sendResponse()` called from the request callback of a slave now sends the answer. It used to return `false`.
 - `buildRequest()` keeps the message type that you pass. It used to turn every type except `WRITE_DATA` into `READ_DATA`.
 - `isValidRequest()` accepts `INVALID_DATA`.
 - `getFault()` returns 0 when the answer is not valid, like the other getters.
 - `end()` on a master drives the line active instead of leaving it as it was.
+- `begin()` returns `false` and does not start when the input pin has no interrupt, or on AVR boards when the handler is `NULL`.
+- `buildRequest()` and `buildResponse()` keep only the low 16 bits of `data`. On ESP boards, higher bits used to overwrite the DATA-ID and the message type.
+- Destroying a copy of an `OpenTherm` object no longer detaches the interrupt of the original.
+
+OpenThermPlus also adds names and overloads. The original names still work.
+
+- `OpenThermRole::MASTER` and `OpenThermRole::SLAVE` for the constructor.
+- `setCHSetpoint()` and `buildSetCHSetpointRequest()`, the new names of `setBoilerTemperature()` and `buildSetBoilerTemperatureRequest()`.
+- Getters that take a variable, and `getFault(flags, oemCode)`.
+- `isCentralHeating2Active()` and `floatToData()`.
+- `CumulativeElectricityProduction`, the correct spelling of `CumulativElectricityProduction`.
 
 ## Run the tests
 

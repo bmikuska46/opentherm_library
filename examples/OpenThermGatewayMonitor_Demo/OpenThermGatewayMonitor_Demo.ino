@@ -15,7 +15,7 @@ const int sInPin = 3;  // for Arduino, 12 for ESP8266 (D6), 19 for ESP32
 const int sOutPin = 5; // for Arduino, 13 for ESP8266 (D7), 23 for ESP32
 
 OpenTherm mOT(mInPin, mOutPin);
-OpenTherm sOT(sInPin, sOutPin, true);
+OpenTherm sOT(sInPin, sOutPin, OpenThermRole::SLAVE);
 
 void IRAM_ATTR mHandleInterrupt()
 {

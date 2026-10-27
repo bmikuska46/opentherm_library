@@ -10,7 +10,7 @@ http://ihormelnyk.com
 
 const int inPin = 2;  // for Arduino, 12 for ESP8266 (D6), 19 for ESP32
 const int outPin = 3; // for Arduino, 13 for ESP8266 (D7), 23 for ESP32
-OpenTherm ot(inPin, outPin, true);
+OpenTherm ot(inPin, outPin, OpenThermRole::SLAVE);
 
 void IRAM_ATTR handleInterrupt()
 {
@@ -26,7 +26,6 @@ void processRequest(unsigned long request, OpenThermResponseStatus status)
     unsigned long response = 0;
     OpenThermMessageID id = ot.getDataID(request);
     uint16_t data = ot.getUInt(request);
-    float f = ot.getFloat(request);
     switch (id)
     {
     case OpenThermMessageID::Status:

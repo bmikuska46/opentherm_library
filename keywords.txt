@@ -12,6 +12,7 @@ OpenThermResponseStatus	KEYWORD1
 OpenThermMessageType	KEYWORD1
 OpenThermRequestType	KEYWORD1
 OpenThermMessageID	KEYWORD1
+OpenThermRole	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
@@ -37,6 +38,7 @@ messageTypeToString	KEYWORD2
 isValidRequest	KEYWORD2
 isValidResponse	KEYWORD2
 buildSetBoilerStatusRequest	KEYWORD2
+buildSetCHSetpointRequest	KEYWORD2
 buildSetBoilerTemperatureRequest	KEYWORD2
 buildGetBoilerTemperatureRequest	KEYWORD2
 isFault	KEYWORD2
@@ -44,11 +46,14 @@ isCentralHeatingActive	KEYWORD2
 isHotWaterActive	KEYWORD2
 isFlameOn	KEYWORD2
 isCoolingActive	KEYWORD2
+isCentralHeating2Active	KEYWORD2
 isDiagnostic	KEYWORD2
 getUInt	KEYWORD2
 getFloat	KEYWORD2
 temperatureToData	KEYWORD2
+floatToData	KEYWORD2
 setBoilerStatus	KEYWORD2
+setCHSetpoint	KEYWORD2
 setBoilerTemperature	KEYWORD2
 getBoilerTemperature	KEYWORD2
 getReturnTemperature	KEYWORD2

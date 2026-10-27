@@ -115,7 +115,9 @@ inline void interrupts()
     deliver();
 }
 inline void pinMode(int, int) {}
-inline int digitalPinToInterrupt(int pin) { return pin; }
+#define NOT_AN_INTERRUPT -1
+// Like an ESP8266, where GPIO16 and up have no interrupt.
+inline int digitalPinToInterrupt(int pin) { return pin < 16 ? pin : NOT_AN_INTERRUPT; }
 inline int digitalRead(int pin) { return fake::levels[pin]; }
 
 inline void digitalWrite(int pin, int level)
